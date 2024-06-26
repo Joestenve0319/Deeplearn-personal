@@ -1,0 +1,92 @@
+from tkinter.ttk import Notebook
+from Unet_train import get_model
+import torch
+from tqdm import tqdm_notebook
+import cv2
+import pandas as pd
+import numpy as np
+from torchvision import transforms as T
+import ttach as tta
+import matplotlib.pyplot as plt
+
+IMAGE_SIZE = 256
+DEVICE = 'cuda' if torch.cuda.is_available() else 'cpu'
+
+trfm = T.Compose([
+    T.ToPILImage(),
+    T.Resize(IMAGE_SIZE),
+    T.ToTensor(),
+    T.Normalize([0.625, 0.448, 0.688],
+                [0.131, 0.177, 0.101]),
+])
+
+
+def rle_encode(im):
+    '''
+    im: numpy array, 1 - mask, 0 - background
+    Returns run length as string formated
+    '''
+    pixels = im.flatten(order='F')
+    pixels = np.concatenate([[0], pixels, [0]])
+    runs = np.where(pixels[1:] != pixels[:-1])[0] + 1
+    runs[1::2] -= runs[::2]
+    return ' '.join(str(x) for x in runs)
+
+
+def rle_decode(mask_rle, shape=(512, 512)):
+    '''
+    mask_rle: run-length as string formated (start length)
+    shape: (height,width) of array to return
+    Returns numpy array, 1 - mask, 0 - background
+
+    '''
+    s = mask_rle.split()
+    starts, lengths = [np.asarray(x, dtype=int) for x in (s[0:][::2], s[1:][::2])]
+    starts -= 1
+    ends = starts + lengths
+    img = np.zeros(shape[0] * shape[1], dtype=np.uint8)
+    for lo, hi in zip(starts, ends):
+        img[lo:hi] = 1
+    return img.reshape(shape, order='F')
+
+
+if __name__ == '__main__':
+    print("test!!!")
+    subm = []
+    model1 = get_model()
+
+    model1.to(DEVICE)
+    model1.load_state_dict(torch.load("94_unet_model_best_0.9388405522592227.pth"), False)
+    model1.eval()
+
+    model1 = tta.SegmentationTTAWrapper(model1, tta.aliases.d4_transform(), merge_mode='mean')
+
+    test_mask = pd.read_csv("D:\data_of_tianchi\cnm.csv",sep="\s",names=['name'])
+    test_mask['name'] = test_mask['name'].apply(lambda x: "D:\\data_of_tianchi\\test_a\\test_a\\" + x)
+
+    for idx, name in enumerate(tqdm_notebook(test_mask['name'].iloc[:])):
+        image = cv2.imread(name)
+        image = trfm(image)
+        with torch.no_grad():
+            image = image.to(DEVICE)[None]
+            score = model1(image)[0][0]
+            score_sigmoid = score.sigmoid().cpu().numpy()
+            score_sigmoid = (score_sigmoid > 0.5).astype(np.uint8)
+            score_sigmoid = cv2.resize(score_sigmoid, (512, 512))
+            # break
+        subm.append([name.split('/')[-1], rle_encode(score_sigmoid)])
+
+    subm = pd.DataFrame(subm)
+    subm.to_csv('ym_mix_tmp.csv', index=None, header=None, sep='\t')
+
+
+
+
+    import matplotlib.pyplot as plt
+
+    plt.figure(figsize=(16, 8))
+    plt.subplot(121)
+    plt.imshow(rle_decode(subm[1].fillna('').iloc[0]), cmap='gray')
+    plt.subplot(122)
+    plt.imshow(cv2.imread('D:/data_of_tianchi/test_a/test_a/' + subm[0].iloc[0]))
+    plt.show()
